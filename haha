@@ -1,0 +1,178 @@
+
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+
+local MIN_DISTANCE = 3      -- "Nearest" ignores prompts closer than this (so you don't pick the one you're standing at)
+local HEIGHT_OFFSET = 3     -- studs above the prompt to land
+local autoTrigger = false   -- fire the prompt after teleporting (needs executor support)
+
+-- Remove old copy if re-executed
+local function getGuiParent()
+	local ok, result = pcall(function()
+		return (gethui and gethui()) or game:GetService("CoreGui")
+	end)
+	if ok and result then return result end
+	return player:WaitForChild("PlayerGui")
+end
+
+local parentGui = getGuiParent()
+local old = parentGui:FindFirstChild("PromptTeleporter")
+if old then old:Destroy() end
+
+-- Helpers
+local function getRoot()
+	local char = player.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getPromptPosition(prompt)
+	local p = prompt.Parent
+	if not p then return nil end
+	if p:IsA("BasePart") then
+		return p.Position
+	elseif p:IsA("Attachment") then
+		return p.WorldPosition
+	elseif p:IsA("Model") then
+		return p:GetPivot().Position
+	end
+	return nil
+end
+
+local function findPrompt(mode)
+	local root = getRoot()
+	if not root then return nil end
+
+	local bestPrompt, bestPos, bestDist
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("ProximityPrompt") and obj.Enabled then
+			local pos = getPromptPosition(obj)
+			if pos then
+				local dist = (pos - root.Position).Magnitude
+				if mode == "nearest" then
+					if dist >= MIN_DISTANCE and (not bestDist or dist < bestDist) then
+						bestPrompt, bestPos, bestDist = obj, pos, dist
+					end
+				else
+					if not bestDist or dist > bestDist then
+						bestPrompt, bestPos, bestDist = obj, pos, dist
+					end
+				end
+			end
+		end
+	end
+	return bestPrompt, bestPos, bestDist
+end
+
+-- GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "PromptTeleporter"
+gui.ResetOnSpawn = false
+gui.Parent = parentGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 220, 0, 190)
+frame.Position = UDim2.new(0.5, -110, 0.3, 0)
+frame.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 30)
+title.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+title.BorderSizePixel = 0
+title.Text = "Prompt Teleporter"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 14
+title.Parent = frame
+Instance.new("UICorner", title).CornerRadius = UDim.new(0, 8)
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -20, 0, 36)
+status.Position = UDim2.new(0, 10, 1, -42)
+status.BackgroundTransparency = 1
+status.Text = "Ready"
+status.TextColor3 = Color3.fromRGB(180, 180, 190)
+status.Font = Enum.Font.Gotham
+status.TextSize = 12
+status.TextWrapped = true
+status.Parent = frame
+
+local function makeButton(text, y, color)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, -20, 0, 32)
+	b.Position = UDim2.new(0, 10, 0, y)
+	b.BackgroundColor3 = color
+	b.BorderSizePixel = 0
+	b.Text = text
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamMedium
+	b.TextSize = 13
+	b.Parent = frame
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	return b
+end
+
+local nearestBtn = makeButton("TP to Nearest Prompt", 40, Color3.fromRGB(60, 120, 220))
+local farthestBtn = makeButton("TP to Farthest Prompt", 78, Color3.fromRGB(200, 90, 70))
+local autoBtn = makeButton("Auto-trigger: OFF", 116, Color3.fromRGB(70, 70, 80))
+
+local function teleportTo(mode)
+	local root = getRoot()
+	if not root then
+		status.Text = "No character found."
+		return
+	end
+
+	local prompt, pos, dist = findPrompt(mode)
+	if not prompt then
+		status.Text = "No prompts found."
+		return
+	end
+
+	root.CFrame = CFrame.new(pos + Vector3.new(0, HEIGHT_OFFSET, 0))
+	status.Text = string.format("Teleported to %s (%.0f studs away)", prompt.Parent.Name, dist)
+
+	if autoTrigger and fireproximityprompt then
+		task.wait(0.15)
+		pcall(fireproximityprompt, prompt)
+	end
+end
+
+nearestBtn.MouseButton1Click:Connect(function() teleportTo("nearest") end)
+farthestBtn.MouseButton1Click:Connect(function() teleportTo("farthest") end)
+
+autoBtn.MouseButton1Click:Connect(function()
+	autoTrigger = not autoTrigger
+	autoBtn.Text = "Auto-trigger: " .. (autoTrigger and "ON" or "OFF")
+	autoBtn.BackgroundColor3 = autoTrigger and Color3.fromRGB(60, 160, 90) or Color3.fromRGB(70, 70, 80)
+	if autoTrigger and not fireproximityprompt then
+		status.Text = "Your executor doesn't support fireproximityprompt."
+	end
+end)
+
+-- Dragging
+local dragging, dragStart, startPos
+title.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = frame.Position
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = false
+	end
+end)
